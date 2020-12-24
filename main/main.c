@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 
+/*
 #include <math.h>
 
 #include "driver/gpio.h"
@@ -13,7 +14,6 @@
 #include "font_render.h"
 #include "ili9481.h"
 
-/*
 #define ILI9481_GPIO_RESET GPIO_NUM_19
 #define ILI9481_GPIO_DC GPIO_NUM_22
 #define ILI9481_GPIO_MOSI GPIO_NUM_23
@@ -555,38 +555,12 @@ void complex_text_demo(ili9481_driver_t *driver, uint16_t y, draw_event_param_t 
 */
 
 
-#define ILI9481_DISPLAY_WIDTH 320
-#define ILI9481_DISPLAY_HEIGHT 480
-#define ILI9481_BUFFER_SIZE 20
 
 
+/*
 void app_main(void)
 {
-	ili9481_driver_t display = {
-		.pin_rst = GPIO_NUM_23,
-		.pin_rd = GPIO_NUM_32,
-		.pin_wr = GPIO_NUM_5,
-		.pin_cs = GPIO_NUM_18,
-		.pin_dc = GPIO_NUM_19,
-		.pin_d0 = GPIO_NUM_33,
-		.pin_d1 = GPIO_NUM_25,
-		.pin_d2 = GPIO_NUM_26,
-		.pin_d3 = GPIO_NUM_27,
-		.pin_d4 = GPIO_NUM_14,
-		.pin_d5 = GPIO_NUM_12,
-		.pin_d6 = GPIO_NUM_13,
-		.pin_d7 = GPIO_NUM_15,
-		//.dma_chan = ILI9481_DMA_CHAN,
-		.display_width = ILI9481_DISPLAY_WIDTH,
-		.display_height = ILI9481_DISPLAY_HEIGHT,
-		.buffer_size = ILI9481_BUFFER_SIZE * ILI9481_DISPLAY_WIDTH, // 2 buffers with 20 lines
-	};
 
-	while(1) {
-		ESP_ERROR_CHECK(ili9481_init(&display));
-	}
-
-	/*
 	ili9481_driver_t display = {
 		.pin_rst = ILI9481_GPIO_RESET,
 		.pin_dc = ILI9481_GPIO_DC,
@@ -743,9 +717,11 @@ void app_main(void)
 
 		font_face_destroy(&font_face);
 	}
-	*/
 
 	// Clean
 	vTaskDelay(portMAX_DELAY);
 	vTaskDelete(NULL);
 }
+*/
+
+#include "parameter_test.c"

@@ -470,7 +470,7 @@ case: 113:
 			}
 			*/
 			switch (c) {
-				case 113:
+				case 'q':
 					kp0 = (kp0 + 1) % 8;
 					break;
 				case 119:
