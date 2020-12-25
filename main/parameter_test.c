@@ -9,7 +9,6 @@ const char *TAG = "ili9481";
 
 #define ILI9481_DISPLAY_WIDTH 320
 #define ILI9481_DISPLAY_HEIGHT 480
-#define ILI9481_BUFFER_SIZE 20
 
 #define CS_ACTIVE    gpio_set_level(driver->pin_cs, 0);
 #define CS_IDLE      gpio_set_level(driver->pin_cs, 1);
@@ -19,8 +18,8 @@ const char *TAG = "ili9481";
 #define RD_IDLE      gpio_set_level(driver->pin_rd, 1);
 #define WR_ACTIVE    gpio_set_level(driver->pin_wr, 0);
 #define WR_IDLE      gpio_set_level(driver->pin_wr, 1);
-#define RST_ACTIVE    gpio_set_level(driver->pin_rst, 0);
-#define RST_IDLE      gpio_set_level(driver->pin_rst, 1);
+#define RST_ACTIVE   gpio_set_level(driver->pin_rst, 0);
+#define RST_IDLE     gpio_set_level(driver->pin_rst, 1);
 
 #define ILI9481_NOP 0x00
 #define ILI9481_SOFT_RESET 0x01
@@ -87,67 +86,70 @@ const char *TAG = "ili9481";
 
 
 typedef struct ili9481_driver {
-	int pin_rst;
-	int pin_rd;
-	int pin_wr;
-	int pin_cs;
-	int pin_dc;
-	int pin_d0;
-	int pin_d1;
-	int pin_d2;
-	int pin_d3;
-	int pin_d4;
-	int pin_d5;
-	int pin_d6;
-	int pin_d7;
+	uint8_t pin_rst;
+	uint8_t pin_rd;
+	uint8_t pin_wr;
+	uint8_t pin_cs;
+	uint8_t pin_dc;
+	uint8_t pin_d0;
+	uint8_t pin_d1;
+	uint8_t pin_d2;
+	uint8_t pin_d3;
+	uint8_t pin_d4;
+	uint8_t pin_d5;
+	uint8_t pin_d6;
+	uint8_t pin_d7;
 	uint16_t display_width;
 	uint16_t display_height;
+	uint32_t data_mask;
 } ili9481_driver_t;
 
 
 typedef struct ili9481_config {
-	int kp0;
-	int kp1;
-	int kp2;
-	int kp3;
-	int kp4;
-	int kp5;
-	int rp0;
-	int rp1;
-	int vrp0;
-	int vrp1;
-	int kn0;
-	int kn1;
-	int kn2;
-	int kn3;
-	int kn4;
-	int kn5;
-	int rn0;
-	int rn1;
-	int vrn0;
-	int vrn1;
+	uint8_t kp0;
+	uint8_t kp1;
+	uint8_t kp2;
+	uint8_t kp3;
+	uint8_t kp4;
+	uint8_t kp5;
+	uint8_t rp0;
+	uint8_t rp1;
+	uint8_t vrp0;
+	uint8_t vrp1;
+	uint8_t kn0;
+	uint8_t kn1;
+	uint8_t kn2;
+	uint8_t kn3;
+	uint8_t kn4;
+	uint8_t kn5;
+	uint8_t rn0;
+	uint8_t rn1;
+	uint8_t vrn0;
+	uint8_t vrn1;
 
-	int vc;
-	int bt;
-	int vrh;
-	int vcm;
-	int vdv;
+	uint8_t vc;
+	uint8_t bt;
+	uint8_t vrh;
+	uint8_t vcm;
+	uint8_t vdv;
 
-	int ap0;
-	int dc00;
-	int dc10;
+	uint8_t ap0;
+	uint8_t dc00;
+	uint8_t dc10;
 
-	int bc0;
-	int div0;
-	int rtn0;
-	int fp0;
-	int bp0;
+	uint8_t bc0;
+	uint8_t div0;
+	uint8_t rtn0;
+	uint8_t fp0;
+	uint8_t bp0;
 
-	int fra;
+	uint8_t fra;
 } ili9481_config_t;
 
 
-static void write_bits(ili9481_driver_t *driver, uint8_t data) {
+static inline void __attribute__((always_inline)) write_bits(ili9481_driver_t *driver, uint8_t data) {
+	/*
+	gpio_set_level(driver->pin_wr, 0);
 	gpio_set_level(driver->pin_d0, ((data >> 0) & 0x01));
 	gpio_set_level(driver->pin_d1, ((data >> 1) & 0x01));
 	gpio_set_level(driver->pin_d2, ((data >> 2) & 0x01));
@@ -156,8 +158,23 @@ static void write_bits(ili9481_driver_t *driver, uint8_t data) {
 	gpio_set_level(driver->pin_d5, ((data >> 5) & 0x01));
 	gpio_set_level(driver->pin_d6, ((data >> 6) & 0x01));
 	gpio_set_level(driver->pin_d7, ((data >> 7) & 0x01));
-	gpio_set_level(driver->pin_wr, 0);
 	gpio_set_level(driver->pin_wr, 1);
+	*/
+
+	uint32_t out_data = 0;
+	out_data |= ((data >> 0) & 0x01) << driver->pin_d0;
+	out_data |= ((data >> 1) & 0x01) << driver->pin_d1;
+	out_data |= ((data >> 2) & 0x01) << driver->pin_d2;
+	out_data |= ((data >> 3) & 0x01) << driver->pin_d3;
+	out_data |= ((data >> 4) & 0x01) << driver->pin_d4;
+	out_data |= ((data >> 5) & 0x01) << driver->pin_d5;
+	out_data |= ((data >> 6) & 0x01) << driver->pin_d6;
+	out_data |= ((data >> 7) & 0x01) << driver->pin_d7;
+
+	REG_WRITE(GPIO_OUT_W1TS_REG, out_data);
+	out_data = (out_data ^ driver->data_mask);
+	REG_WRITE(GPIO_OUT_W1TC_REG, out_data | (1 << driver->pin_wr));
+	REG_WRITE(GPIO_OUT_W1TS_REG, (1 << driver->pin_wr));
 }
 
 
@@ -202,12 +219,19 @@ static uint8_t read_bits(ili9481_driver_t *driver) {
 static void write_command(ili9481_driver_t *driver, uint8_t command) {
 	CD_COMMAND;
 	write_bits(driver, command);
+	CD_DATA;
 }
 
 
-static void write_data_8(ili9481_driver_t *driver, uint8_t data) {
-	CD_DATA;
+static inline void __attribute__((always_inline)) write_data_8(ili9481_driver_t *driver, uint8_t data) {
 	write_bits(driver, data);
+}
+
+
+static inline void __attribute__((always_inline)) write_data_24(ili9481_driver_t *driver, uint32_t data) {
+	write_bits(driver, (data & 0x00FF));
+	write_bits(driver, ((data >> 8) & 0x00FF));
+	write_bits(driver, ((data >> 16) & 0x00FF));
 }
 
 
@@ -215,14 +239,6 @@ static uint8_t read_data_8(ili9481_driver_t *driver) {
 	CD_DATA;
 	uint8_t data = read_bits(driver);
 	return data;
-}
-
-
-static void write_data_24(ili9481_driver_t *driver, uint32_t data) {
-	CD_DATA;
-	write_bits(driver, (data & 0x00FF));
-	write_bits(driver, ((data >> 8) & 0x00FF));
-	write_bits(driver, ((data >> 16) & 0x00FF));
 }
 
 
@@ -244,6 +260,16 @@ static void set_addr_window(ili9481_driver_t *driver, uint16_t x0, uint16_t y0, 
 
 
 esp_err_t ili9481_init(ili9481_driver_t *driver) {
+	driver->data_mask = 0x00000000;
+	driver->data_mask |= (1 << driver->pin_d0);
+	driver->data_mask |= (1 << driver->pin_d1);
+	driver->data_mask |= (1 << driver->pin_d2);
+	driver->data_mask |= (1 << driver->pin_d3);
+	driver->data_mask |= (1 << driver->pin_d4);
+	driver->data_mask |= (1 << driver->pin_d5);
+	driver->data_mask |= (1 << driver->pin_d6);
+	driver->data_mask |= (1 << driver->pin_d7);
+
 	gpio_config_t io_conf;
 	io_conf.intr_type = GPIO_INTR_DISABLE;
 	io_conf.mode = GPIO_MODE_OUTPUT;
@@ -305,7 +331,7 @@ static void write_init_message(ili9481_driver_t *driver) {
 
 
 static void configure_display(ili9481_driver_t *driver, ili9481_config_t *config) {
-	write_command(driver, ILI9481_SET_DISPLAY_OFF);
+	//write_command(driver, ILI9481_SET_DISPLAY_OFF);
 
 	write_command(driver, ILI9481_POWER_SETTING);
 	write_data_8(driver, config->vc);
@@ -401,7 +427,7 @@ static void transfer_image(ili9481_driver_t *driver) {
 			continue;
 		}
 		if (c == 0xff) {
-			continue;
+			c = 0x00;
 		}
 		if (top) {
 			color[component] |= htoi(c);
@@ -472,11 +498,14 @@ static void draw_combined_gradient2(ili9481_driver_t *driver, int x, int y) {
 
 
 static void draw_rainbow(ili9481_driver_t *driver, int x, int y) {
-	int r = ((driver->display_height / 2) - abs(y - 0)) * 511 / driver->display_height;
-	int g = ((driver->display_height / 2) - abs(y - 240)) * 511 / driver->display_height;
-	int b = ((driver->display_height / 2) - abs(y - 480)) * 511 / driver->display_height;
+	int r = ((320 - abs(y - 0)) * 480) / driver->display_height;
+	int g = ((320 - abs(y - 240)) * 480) / driver->display_height;
+	int b = ((320 - abs(y - 480)) * 480) / driver->display_height;
+	if (r > 255) { r = 255; }
 	if (r < 0) { r = 0; }
+	if (g > 255) { g = 255; }
 	if (g < 0) { g = 0; }
+	if (b > 255) { b = 255; }
 	if (b < 0) { b = 0; }
 	write_data_24(driver, ili9481_rgb_to_color(r, g, b));
 }
@@ -655,7 +684,7 @@ void app_main(void) {
 		.pin_wr = GPIO_NUM_5,
 		.pin_cs = GPIO_NUM_18,
 		.pin_dc = GPIO_NUM_19,
-		.pin_d0 = GPIO_NUM_33,
+		.pin_d0 = GPIO_NUM_21,
 		.pin_d1 = GPIO_NUM_25,
 		.pin_d2 = GPIO_NUM_26,
 		.pin_d3 = GPIO_NUM_27,
