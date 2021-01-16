@@ -1,12 +1,12 @@
 #include "driver/gpio.h"
+#include "driver/periph_ctrl.h"
+#include "esp32/rom/lldesc.h"
 #include "esp32/rom/uart.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
-#include "driver/periph_ctrl.h"
-#include "soc/i2s_struct.h"
 #include "soc/i2s_reg.h"
-#include "esp32/rom/lldesc.h"
+#include "soc/i2s_struct.h"
 
 const char *TAG = "ili9481";
 
@@ -687,6 +687,51 @@ static void main_loop(ili9481_driver_t *driver, ili9481_config_t *config) {
 }
 
 
+static void i2s_reset_fifo(i2s_dev_t *dev) {
+	dev->conf.tx_reset = 1;
+	dev->conf.tx_fifo_reset = 1;
+	dev->conf.rx_fifo_reset = 1;
+	dev->conf.tx_reset = 0;
+	dev->conf.tx_fifo_reset = 0;
+	dev->conf.rx_fifo_reset = 0;
+}
+
+
+static void i2s_reset_dma(i2s_dev_t *dev) {
+	dev->lc_conf.in_rst = 1;
+	dev->lc_conf.out_rst = 1;
+	dev->lc_conf.ahbm_rst = 1;
+	dev->lc_conf.ahbm_fifo_rst = 1;
+	dev->lc_conf.in_rst = 0;
+	dev->lc_conf.out_rst = 0;
+	dev->lc_conf.ahbm_rst = 0;
+	dev->lc_conf.ahbm_fifo_rst = 0;
+}
+
+
+static void i2s_set_lcd_mode(i2s_dev_t *dev) {
+	dev->conf2.val = 0;
+	dev->conf2.lcd_en = 1;
+	dev->conf2.lcd_tx_wrx2_en = 1;
+	dev->conf2.lcd_tx_sdx2_en = 0;
+}
+
+intr_handle_t int_handle;
+uint8_t *buf = NULL;
+lldesc_t *dma_descriptor = NULL;
+int line = 0;
+
+static void IRAM_ATTR i2s_isr(void *const params) {
+	I2S1.int_clr.val = I2S1.int_st.val;
+
+	line++;
+	if (line < 10) {
+		i2s_dev_t *dev = &I2S1;
+		dev->out_link.start = 1;
+		dev->conf.tx_start = 1;
+	}
+}
+
 static void draw_dma_pattern(ili9481_driver_t *driver) {
 	const int sig_data_base = I2S1O_DATA_OUT0_IDX;
 	const int sig_wr = I2S1O_WS_OUT_IDX;
@@ -703,25 +748,8 @@ static void draw_dma_pattern(ili9481_driver_t *driver) {
 
 	periph_module_enable(PERIPH_I2S1_MODULE);
 
-	dev->conf.rx_reset = 1;
-	dev->conf.rx_reset = 0;
-	dev->conf.tx_reset = 1;
-	dev->conf.tx_reset = 0;
-
-	dev->lc_conf.in_rst = 1;
-	dev->lc_conf.in_rst = 0;
-	dev->lc_conf.out_rst = 1;
-	dev->lc_conf.out_rst = 0;
-
-	dev->conf.rx_fifo_reset = 1;
-	dev->conf.rx_fifo_reset = 0;
-	dev->conf.tx_fifo_reset = 1;
-	dev->conf.tx_fifo_reset = 0;
-
-	dev->conf2.val = 0;
-	dev->conf2.lcd_en = 1;
-	dev->conf2.lcd_tx_wrx2_en = 1; // HN
-	dev->conf2.lcd_tx_sdx2_en = 0; // HN
+	i2s_reset_fifo(dev);
+	i2s_set_lcd_mode(dev);
 
 	dev->sample_rate_conf.val = 0;
 	dev->sample_rate_conf.rx_bits_mod = 8;
@@ -736,13 +764,15 @@ static void draw_dma_pattern(ili9481_driver_t *driver) {
 	dev->clkm_conf.clkm_div_num = 8;
 	dev->clkm_conf.clk_en = 1;
 
+	dev->timing.val = 0;
+
 	dev->fifo_conf.val = 0;
 	dev->fifo_conf.rx_fifo_mod_force_en = 1;
 	dev->fifo_conf.tx_fifo_mod_force_en = 1;
 	dev->fifo_conf.tx_fifo_mod = 1;
 	dev->fifo_conf.tx_fifo_mod = 1;
-	dev->fifo_conf.rx_data_num = 8;
-	dev->fifo_conf.tx_data_num = 8;
+	dev->fifo_conf.rx_data_num = 32;
+	dev->fifo_conf.tx_data_num = 32;
 	dev->fifo_conf.dscr_en = 1;
 
 	dev->conf1.val = 0;
@@ -750,17 +780,10 @@ static void draw_dma_pattern(ili9481_driver_t *driver) {
 	dev->conf1.tx_pcm_bypass = 1;
 
 	dev->conf_chan.val = 0;
-	dev->conf_chan.tx_chan_mod = 2; // HN
+	dev->conf_chan.tx_chan_mod = 2;
 	dev->conf_chan.rx_chan_mod = 2;
 
-	//Invert ws to be active-low... ToDo: make this configurable
-	dev->conf.tx_right_first = 0;
-	dev->conf.rx_right_first = 0;
-
-	dev->timing.val = 0;
-	dev->timing.tx_ws_in_delay = 3;
-
-	uint8_t *buf = (uint8_t *)heap_caps_malloc(320*3, MALLOC_CAP_DMA);
+	buf = (uint8_t *)heap_caps_malloc(320*3, MALLOC_CAP_DMA);
 	for (size_t i = 0; i < 320; ++i) {
 		buf[i*3] = (i < 107) ? (i * 256 / 107) : 0;
 		buf[i*3+1] = (i < 107) ? 0 : (i < 214 ? (((i-107) * 256 / 107)) : 0);
@@ -775,46 +798,52 @@ static void draw_dma_pattern(ili9481_driver_t *driver) {
 		rotate_buf[i] = (rotate_buf[i] >> 16) | (rotate_buf[i] << 16);
 	}
 
-	lldesc_t *dma_descriptor = (lldesc_t *)heap_caps_malloc(sizeof(lldesc_t), MALLOC_CAP_DMA);
+	dma_descriptor = (lldesc_t *)heap_caps_malloc(sizeof(lldesc_t), MALLOC_CAP_DMA);
 	dma_descriptor->size = 320*3;
 	dma_descriptor->length = 320*3;
 	dma_descriptor->buf = buf;
 	dma_descriptor->owner = 1;
 	dma_descriptor->sosf = 0;
-	dma_descriptor->eof = 0;
-	dma_descriptor->qe.stqe_next = dma_descriptor;
+	dma_descriptor->eof = 1;
+	dma_descriptor->qe.stqe_next = NULL;
 
-	dev->lc_conf.in_rst = 1;
-	dev->lc_conf.out_rst = 1;
-	dev->lc_conf.ahbm_rst = 1;
-	dev->lc_conf.ahbm_fifo_rst = 1;
-	dev->lc_conf.in_rst = 0;
-	dev->lc_conf.out_rst = 0;
-	dev->lc_conf.ahbm_rst = 0;
-	dev->lc_conf.ahbm_fifo_rst = 0;
-	dev->conf.tx_reset = 1;
-	dev->conf.tx_fifo_reset = 1;
-	dev->conf.rx_fifo_reset = 1;
-	dev->conf.tx_reset = 0;
-	dev->conf.tx_fifo_reset = 0;
-	dev->conf.rx_fifo_reset = 0;
+	i2s_reset_dma(dev);
 
 	dev->lc_conf.val = I2S_OUT_DATA_BURST_EN | I2S_OUTDSCR_BURST_EN | I2S_OUT_DATA_BURST_EN;
 	dev->out_link.addr = (uint32_t)dma_descriptor;
 
 	gpio_matrix_out(driver->pin_wr, sig_wr, true, false);
 
+	dev->int_ena.out_eof = 1;
+	dev->int_ena.out_total_eof = 1;
+
+	const esp_err_t ret = esp_intr_alloc(
+		ETS_I2S1_INTR_SOURCE,
+		ESP_INTR_FLAG_IRAM,
+		i2s_isr,
+		NULL,
+		&int_handle
+	);
+	esp_intr_set_in_iram(int_handle, true);
+	esp_intr_enable(int_handle);
+
 	dev->out_link.start = 1;
 	dev->conf.tx_start = 1;
 
+	vTaskDelay(4);
+	dma_descriptor->eof = 0;
+	dma_descriptor->qe.stqe_next = NULL;
+	/*
 	while(1) {
 		for (size_t i = 0; i < 320*3/4; ++i) {
 			rotate_buf[i] = (rotate_buf[i] >> 16) | (rotate_buf[i] << 16);
 		}
 		vTaskDelay(1);
 	}
+	*/
+	vTaskDelay(10);
 
-	printf("ook\n");
+	printf("done\n");
 	vTaskDelay(portMAX_DELAY);
 }
 
@@ -899,7 +928,7 @@ void app_main(void) {
 		{ILI9481_POWER_SETTING_NORMAL, 2, (const uint8_t *)"\x01\x11"},
 		{ILI9481_DISPLAY_TIMING_SETTING_NORMAL, 3, (const uint8_t *)"\x10\x10\x88"},
 		{ILI9481_PANEL_DRIVING_SETTING, 5, (const uint8_t *)"\x00\x3b\x00\x02\x11"},
-		{ILI9481_FRAME_RATE_CONTROL, 1, (const uint8_t *)"\x03"},
+		{ILI9481_FRAME_RATE_CONTROL, 1, (const uint8_t *)"\x00"},
 		{ILI9481_GAMMA_SETTING, 12, (const uint8_t *)"\x00\x14\x33\x10\x00\x16\x44\x36\x77\x00\x0f\x00"},
 		{ILI9481_SET_PIXEL_FORMAT, 1, (const uint8_t *)"\x66"},
 		{ILI9481_SET_ADDRESS_MODE, 1, (const uint8_t *)"\x40"},
