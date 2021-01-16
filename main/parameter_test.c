@@ -81,6 +81,8 @@ const char *TAG = "ili9481";
 #define ILI9481_NV_MEMORY_STATUS 0xE2
 #define ILI9481_NV_MEMORY_PROTECTION 0xE3
 
+#define ILI9481_CMDLIST_END 0x00
+
 
 #define ili9481_rgb_to_color(r, g, b) ((r << 16) | (g << 8) | b)
 
@@ -145,6 +147,12 @@ typedef struct ili9481_config {
 
 	uint8_t fra;
 } ili9481_config_t;
+
+typedef struct ili9481_command {
+	uint8_t command;
+	uint8_t data_size;
+	const uint8_t *data;
+} ili9481_command_t;
 
 
 static inline void __attribute__((always_inline)) write_bits(ili9481_driver_t *driver, uint8_t data) {
@@ -239,6 +247,16 @@ static uint8_t read_data_8(ili9481_driver_t *driver) {
 	CD_DATA;
 	uint8_t data = read_bits(driver);
 	return data;
+}
+
+static void execute_commands(ili9481_driver_t *driver, ili9481_command_t *sequence) {
+	while (sequence->command != ILI9481_CMDLIST_END) {
+		write_command(driver, sequence->command);
+		for (uint8_t i = 0; i < sequence->data_size; ++i) {
+			write_data_8(driver, sequence->data[i]);
+		}
+		sequence++;
+	}
 }
 
 
@@ -530,18 +548,6 @@ static void draw_pattern(ili9481_driver_t *driver, int pattern) {
 					draw_rainbow(driver, x, y);
 					break;
 			}
-
-			/*
-				int col = 255;
-				if ((j < 160)) {
-					col = col * i / driver->display_height;
-				}
-				else {
-					col = col * j / (driver->display_width / 2);
-				}
-				col = col % 256;
-				write_data_24(driver, ili9481_rgb_to_color(col, col, col));
-			*/
 		}
 	}
 }
@@ -677,6 +683,13 @@ static void main_loop(ili9481_driver_t *driver, ili9481_config_t *config) {
 }
 
 
+static void parameter_test(ili9481_driver_t *driver, ili9481_command_t *commands) {
+	execute_commands(driver, commands);
+	set_addr_window(driver, 0, 0,  driver->display_width - 1, driver->display_height - 1);
+	draw_pattern(driver, 0);
+}
+
+
 void app_main(void) {
 	ili9481_driver_t display = {
 		.pin_rst = GPIO_NUM_23,
@@ -695,6 +708,7 @@ void app_main(void) {
 		.display_width = ILI9481_DISPLAY_WIDTH,
 		.display_height = ILI9481_DISPLAY_HEIGHT,
 	};
+	/*
 	ili9481_config_t config = {
 		.kp0 = 0x0,
 		.kp1 = 0x0,
@@ -735,10 +749,29 @@ void app_main(void) {
 
 		.fra = 0x3
 	};
+	*/
 
 	ESP_ERROR_CHECK(ili9481_init(&display));
 	write_init_message(&display);
-	main_loop(&display, &config);
+
+	ili9481_command_t init_sequence[] = {
+		{ILI9481_COMMAND_ACCESS_PROTECT, 1, (const uint8_t *)"\x00"},
+		{ILI9481_POWER_SETTING, 3, (const uint8_t *)"\x07\x41\x1d"},
+		{ILI9481_VCOM_CONTROL, 3, (const uint8_t *)"\x00\x2b\x1f"},
+		{ILI9481_POWER_SETTING_NORMAL, 2, (const uint8_t *)"\x01\x11"},
+		{ILI9481_DISPLAY_TIMING_SETTING_NORMAL, 3, (const uint8_t *)"\x10\x10\x88"},
+		{ILI9481_PANEL_DRIVING_SETTING, 5, (const uint8_t *)"\x10\x3b\x00\x02\x11"},
+		{ILI9481_FRAME_RATE_CONTROL, 1, (const uint8_t *)"\x03"},
+		{ILI9481_GAMMA_SETTING, 12, (const uint8_t *)"\x00\x14\x33\x10\x00\x16\x44\x36\x77\x00\x0f\x00"},
+		{ILI9481_SET_PIXEL_FORMAT, 1, (const uint8_t *)"\x66"},
+		{ILI9481_SET_ADDRESS_MODE, 1, (const uint8_t *)"\x40"},
+		{ILI9481_SET_DISPLAY_ON, 0, NULL},
+		{ILI9481_CMDLIST_END, 0, NULL},
+	};
+
+	parameter_test(&display, init_sequence);
+
+	//main_loop(&display, &config);
 
 	vTaskDelay(portMAX_DELAY);
 	vTaskDelete(NULL);
