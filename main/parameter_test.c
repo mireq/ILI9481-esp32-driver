@@ -3,6 +3,10 @@
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "driver/periph_ctrl.h"
+#include "soc/i2s_struct.h"
+#include "soc/i2s_reg.h"
+#include "esp32/rom/lldesc.h"
 
 const char *TAG = "ili9481";
 
@@ -683,10 +687,144 @@ static void main_loop(ili9481_driver_t *driver, ili9481_config_t *config) {
 }
 
 
+static void draw_dma_pattern(ili9481_driver_t *driver) {
+	const int sig_data_base = I2S1O_DATA_OUT0_IDX;
+	const int sig_wr = I2S1O_WS_OUT_IDX;
+	i2s_dev_t *dev = &I2S1;
+
+	gpio_matrix_out(driver->pin_d0, sig_data_base+0, false, false);
+	gpio_matrix_out(driver->pin_d1, sig_data_base+1, false, false);
+	gpio_matrix_out(driver->pin_d2, sig_data_base+2, false, false);
+	gpio_matrix_out(driver->pin_d3, sig_data_base+3, false, false);
+	gpio_matrix_out(driver->pin_d4, sig_data_base+4, false, false);
+	gpio_matrix_out(driver->pin_d5, sig_data_base+5, false, false);
+	gpio_matrix_out(driver->pin_d6, sig_data_base+6, false, false);
+	gpio_matrix_out(driver->pin_d7, sig_data_base+7, false, false);
+
+	periph_module_enable(PERIPH_I2S1_MODULE);
+
+	dev->conf.rx_reset = 1;
+	dev->conf.rx_reset = 0;
+	dev->conf.tx_reset = 1;
+	dev->conf.tx_reset = 0;
+
+	dev->lc_conf.in_rst = 1;
+	dev->lc_conf.in_rst = 0;
+	dev->lc_conf.out_rst = 1;
+	dev->lc_conf.out_rst = 0;
+
+	dev->conf.rx_fifo_reset = 1;
+	dev->conf.rx_fifo_reset = 0;
+	dev->conf.tx_fifo_reset = 1;
+	dev->conf.tx_fifo_reset = 0;
+
+	dev->conf2.val = 0;
+	dev->conf2.lcd_en = 1;
+	dev->conf2.lcd_tx_wrx2_en = 1; // HN
+	dev->conf2.lcd_tx_sdx2_en = 0; // HN
+
+	dev->sample_rate_conf.val = 0;
+	dev->sample_rate_conf.rx_bits_mod = 8;
+	dev->sample_rate_conf.tx_bits_mod = 8;
+	dev->sample_rate_conf.rx_bck_div_num = 2;
+	dev->sample_rate_conf.tx_bck_div_num = 2;
+
+	dev->clkm_conf.val = 0;
+	dev->clkm_conf.clka_en = 0;
+	dev->clkm_conf.clkm_div_a = 63;
+	dev->clkm_conf.clkm_div_b = 63;
+	dev->clkm_conf.clkm_div_num = 8;
+	dev->clkm_conf.clk_en = 1;
+
+	dev->fifo_conf.val = 0;
+	dev->fifo_conf.rx_fifo_mod_force_en = 1;
+	dev->fifo_conf.tx_fifo_mod_force_en = 1;
+	dev->fifo_conf.tx_fifo_mod = 1;
+	dev->fifo_conf.tx_fifo_mod = 1;
+	dev->fifo_conf.rx_data_num = 8;
+	dev->fifo_conf.tx_data_num = 8;
+	dev->fifo_conf.dscr_en = 1;
+
+	dev->conf1.val = 0;
+	dev->conf1.tx_stop_en = 1;
+	dev->conf1.tx_pcm_bypass = 1;
+
+	dev->conf_chan.val = 0;
+	dev->conf_chan.tx_chan_mod = 2; // HN
+	dev->conf_chan.rx_chan_mod = 2;
+
+	//Invert ws to be active-low... ToDo: make this configurable
+	dev->conf.tx_right_first = 0;
+	dev->conf.rx_right_first = 0;
+
+	dev->timing.val = 0;
+	dev->timing.tx_ws_in_delay = 3;
+
+	uint8_t *buf = (uint8_t *)heap_caps_malloc(320*3, MALLOC_CAP_DMA);
+	for (size_t i = 0; i < 320; ++i) {
+		buf[i*3] = (i < 107) ? (i * 256 / 107) : 0;
+		buf[i*3+1] = (i < 107) ? 0 : (i < 214 ? (((i-107) * 256 / 107)) : 0);
+		buf[i*3+2] = (i < 214) ? 0 : ((i-106) * 256 / 106);
+	}
+	buf[0] = 255;
+	buf[1] = 255;
+	buf[2] = 255;
+
+	uint32_t *rotate_buf = (uint32_t *)buf;
+	for (size_t i = 0; i < 320*3/4; ++i) {
+		rotate_buf[i] = (rotate_buf[i] >> 16) | (rotate_buf[i] << 16);
+	}
+
+	lldesc_t *dma_descriptor = (lldesc_t *)heap_caps_malloc(sizeof(lldesc_t), MALLOC_CAP_DMA);
+	dma_descriptor->size = 320*3;
+	dma_descriptor->length = 320*3;
+	dma_descriptor->buf = buf;
+	dma_descriptor->owner = 1;
+	dma_descriptor->sosf = 0;
+	dma_descriptor->eof = 0;
+	dma_descriptor->qe.stqe_next = dma_descriptor;
+
+	dev->lc_conf.in_rst = 1;
+	dev->lc_conf.out_rst = 1;
+	dev->lc_conf.ahbm_rst = 1;
+	dev->lc_conf.ahbm_fifo_rst = 1;
+	dev->lc_conf.in_rst = 0;
+	dev->lc_conf.out_rst = 0;
+	dev->lc_conf.ahbm_rst = 0;
+	dev->lc_conf.ahbm_fifo_rst = 0;
+	dev->conf.tx_reset = 1;
+	dev->conf.tx_fifo_reset = 1;
+	dev->conf.rx_fifo_reset = 1;
+	dev->conf.tx_reset = 0;
+	dev->conf.tx_fifo_reset = 0;
+	dev->conf.rx_fifo_reset = 0;
+
+	dev->lc_conf.val = I2S_OUT_DATA_BURST_EN | I2S_OUTDSCR_BURST_EN | I2S_OUT_DATA_BURST_EN;
+	dev->out_link.addr = (uint32_t)dma_descriptor;
+
+	gpio_matrix_out(driver->pin_wr, sig_wr, true, false);
+
+	dev->out_link.start = 1;
+	dev->conf.tx_start = 1;
+
+	while(1) {
+		for (size_t i = 0; i < 320*3/4; ++i) {
+			rotate_buf[i] = (rotate_buf[i] >> 16) | (rotate_buf[i] << 16);
+		}
+		vTaskDelay(1);
+	}
+
+	printf("ook\n");
+	vTaskDelay(portMAX_DELAY);
+}
+
+
 static void parameter_test(ili9481_driver_t *driver, ili9481_command_t *commands) {
 	execute_commands(driver, commands);
 	set_addr_window(driver, 0, 0,  driver->display_width - 1, driver->display_height - 1);
-	draw_pattern(driver, 0);
+
+	draw_dma_pattern(driver);
+	//draw_pattern(driver, 0);
 }
 
 
@@ -760,7 +898,7 @@ void app_main(void) {
 		{ILI9481_VCOM_CONTROL, 3, (const uint8_t *)"\x00\x2b\x1f"},
 		{ILI9481_POWER_SETTING_NORMAL, 2, (const uint8_t *)"\x01\x11"},
 		{ILI9481_DISPLAY_TIMING_SETTING_NORMAL, 3, (const uint8_t *)"\x10\x10\x88"},
-		{ILI9481_PANEL_DRIVING_SETTING, 5, (const uint8_t *)"\x10\x3b\x00\x02\x11"},
+		{ILI9481_PANEL_DRIVING_SETTING, 5, (const uint8_t *)"\x00\x3b\x00\x02\x11"},
 		{ILI9481_FRAME_RATE_CONTROL, 1, (const uint8_t *)"\x03"},
 		{ILI9481_GAMMA_SETTING, 12, (const uint8_t *)"\x00\x14\x33\x10\x00\x16\x44\x36\x77\x00\x0f\x00"},
 		{ILI9481_SET_PIXEL_FORMAT, 1, (const uint8_t *)"\x66"},
