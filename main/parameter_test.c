@@ -736,7 +736,7 @@ static void i2s_set_speed(i2s_dev_t *dev) {
 	dev->clkm_conf.clka_en = 0;
 	dev->clkm_conf.clkm_div_a = 63;
 	dev->clkm_conf.clkm_div_b = 63;
-	dev->clkm_conf.clkm_div_num = 8;
+	dev->clkm_conf.clkm_div_num = 128;
 	dev->clkm_conf.clk_en = 1;
 
 	dev->timing.val = 0;
@@ -809,7 +809,17 @@ uint8_t *buf = NULL;
 static void IRAM_ATTR i2s_isr(void *const params) {
 	const i2s_driver_t *drv = (i2s_driver_t *)(params);
 	i2s_dev_t *dev = drv->hw;
+	//ESP_EARLY_LOGE(TAG, "interrupt status: 0x%08x", dev->int_st.val);
 
+    if (dev->int_st.out_eof || dev->int_st.out_total_eof)
+    {
+        dev->conf.tx_start = 0;
+        dev->conf.tx_reset = 1;
+        dev->conf.tx_reset = 0;
+
+    }
+
+	dev->int_clr.val = dev->int_st.val;
 
 		/*
 	if (dev->int_st.out_total_eof) {
@@ -951,7 +961,9 @@ static esp_err_t i2s_intr_init(i2s_dev_t *dev) {
 
 	dev->int_ena.out_total_eof = 1;
 	dev->int_ena.out_dscr_err = 1;
-	dev->int_ena.out_done = 1;
+	dev->int_ena.out_eof = 1;
+	//dev->int_ena.out_done = 1;
+
 	//dev->int_ena.in_err_eof = 1;
 	//dev->int_ena.out_eof = 1;
 	//dev->int_ena.out_dscr_err = 1;
@@ -959,10 +971,44 @@ static esp_err_t i2s_intr_init(i2s_dev_t *dev) {
 	return ESP_OK;
 }
 
+static void i2s_trans_dma_start(i2s_driver_t *drv, i2s_transaction_t *transaction) {
+	i2s_dev_t *dev = drv->hw;
+
+
+	/*
+	dev->conf.tx_reset = 1;
+	dev->conf.tx_fifo_reset = 1;
+	dev->conf.rx_fifo_reset = 1;
+	dev->conf.tx_reset = 0;
+	dev->conf.tx_fifo_reset = 0;
+	dev->conf.rx_fifo_reset = 0;
+	*/
+
+	//i2s_configure_dma(dev);
+	//i2s_set_lcd_mode(dev);
+	//i2s_set_speed(dev);
+	//i2s_configure_tx(dev);
+
+	drv->dma->size = 320*3;
+	drv->dma->length = 320*3;
+	drv->dma->buf = buf;
+	drv->dma->owner = 1;
+	drv->dma->sosf = 0;
+	drv->dma->eof = 1;
+	drv->dma->empty = 0;
+	drv->dma->qe.stqe_next = NULL;
+
+	//dev->out_link.addr = 0;
+	dev->out_link.addr = ((uint32_t)drv->dma) & 0xfffff;
+	dev->out_link.start = 1;
+	dev->conf.tx_start = 1;
+}
+
 static void i2s_trans_enqueue(i2s_dev_t *dev, i2s_transaction_t *transaction) {
 	int dev_num = (dev == &I2S0) ? 0 : 1;
 	i2s_driver_t *drv = &(i2s_drivers[dev_num]);
-	xQueueSend(drv->tx_queue, transaction, portMAX_DELAY);
+	i2s_trans_dma_start(drv, transaction);
+	//xQueueSend(drv->tx_queue, transaction, portMAX_DELAY);
 }
 
 int line = 0;
@@ -1042,10 +1088,19 @@ static void draw_dma_pattern(ili9481_driver_t *driver) {
 		.length = 320*3,
 		.user_data = NULL
 	};
+	i2s_trans_enqueue(&I2S1, &trans);
+
+	while (1) {
+		vTaskDelay(1);
+		i2s_trans_enqueue(&I2S1, &trans);
+		//printf("ook\n");
+	}
+
+	/*
 	while (1) {
 		printf("queue\n");
-		i2s_trans_enqueue(&I2S1, &trans);
 	}
+	*/
 
 	//esp_intr_enable(i2s_drivers[1].intr_handle);
 
