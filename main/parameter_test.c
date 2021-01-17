@@ -736,7 +736,7 @@ static void i2s_set_speed(i2s_dev_t *dev) {
 	dev->clkm_conf.clka_en = 0;
 	dev->clkm_conf.clkm_div_a = 63;
 	dev->clkm_conf.clkm_div_b = 63;
-	dev->clkm_conf.clkm_div_num = 128;
+	dev->clkm_conf.clkm_div_num = 8;
 	dev->clkm_conf.clk_en = 1;
 
 	dev->timing.val = 0;
@@ -809,17 +809,26 @@ uint8_t *buf = NULL;
 static void IRAM_ATTR i2s_isr(void *const params) {
 	const i2s_driver_t *drv = (i2s_driver_t *)(params);
 	i2s_dev_t *dev = drv->hw;
+	int done = 0;
 	//ESP_EARLY_LOGE(TAG, "interrupt status: 0x%08x", dev->int_st.val);
 
     if (dev->int_st.out_eof || dev->int_st.out_total_eof)
     {
+    	 		while (!dev->state.tx_idle);
+
         dev->conf.tx_start = 0;
         dev->conf.tx_reset = 1;
         dev->conf.tx_reset = 0;
+        done = 1;
 
     }
 
 	dev->int_clr.val = dev->int_st.val;
+
+	if (done) {
+		dev->out_link.start = 1;
+		dev->conf.tx_start = 1;
+	}
 
 		/*
 	if (dev->int_st.out_total_eof) {
@@ -960,8 +969,8 @@ static esp_err_t i2s_intr_init(i2s_dev_t *dev) {
 	}
 
 	dev->int_ena.out_total_eof = 1;
-	dev->int_ena.out_dscr_err = 1;
-	dev->int_ena.out_eof = 1;
+	//dev->int_ena.out_dscr_err = 1;
+	//dev->int_ena.out_eof = 1;
 	//dev->int_ena.out_done = 1;
 
 	//dev->int_ena.in_err_eof = 1;
@@ -1090,11 +1099,13 @@ static void draw_dma_pattern(ili9481_driver_t *driver) {
 	};
 	i2s_trans_enqueue(&I2S1, &trans);
 
+	/*
 	while (1) {
 		vTaskDelay(1);
 		i2s_trans_enqueue(&I2S1, &trans);
 		//printf("ook\n");
 	}
+	*/
 
 	/*
 	while (1) {
@@ -1108,12 +1119,6 @@ static void draw_dma_pattern(ili9481_driver_t *driver) {
 	dev->out_link.start = 1;
 	dev->conf.tx_start = 1;
 
-	while (1) {
-		vTaskDelay(1);
-		for (size_t i = 0; i < 320*3/4; ++i) {
-			rotate_buf[i] = (rotate_buf[i] >> 16) | (rotate_buf[i] << 16);
-		}
-	}
 	dma_descriptor->eof = 0;
 	dma_descriptor->qe.stqe_next = NULL;
 	*/
@@ -1122,6 +1127,12 @@ static void draw_dma_pattern(ili9481_driver_t *driver) {
 	}
 	*/
 	//vTaskDelay(10);
+	while (1) {
+		vTaskDelay(1);
+		for (size_t i = 0; i < 320*3/4; ++i) {
+			rotate_buf[i] = (rotate_buf[i] >> 16) | (rotate_buf[i] << 16);
+		}
+	}
 
 	printf("done\n");
 	vTaskDelay(portMAX_DELAY);
