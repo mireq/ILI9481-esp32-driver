@@ -3,8 +3,12 @@
 #include "esp32/rom/lldesc.h"
 #include "esp32/rom/uart.h"
 #include "esp_log.h"
+#include "esp_intr_alloc.h"
+#include "hal/i2s_ll.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include "freertos/semphr.h"
+#include "freertos/queue.h"
 #include "soc/i2s_reg.h"
 #include "soc/i2s_struct.h"
 
@@ -697,7 +701,7 @@ static void i2s_reset_fifo(i2s_dev_t *dev) {
 }
 
 
-static void i2s_reset_dma(i2s_dev_t *dev) {
+static void i2s_configure_dma(i2s_dev_t *dev) {
 	dev->lc_conf.in_rst = 1;
 	dev->lc_conf.out_rst = 1;
 	dev->lc_conf.ahbm_rst = 1;
@@ -706,6 +710,10 @@ static void i2s_reset_dma(i2s_dev_t *dev) {
 	dev->lc_conf.out_rst = 0;
 	dev->lc_conf.ahbm_rst = 0;
 	dev->lc_conf.ahbm_fifo_rst = 0;
+
+	dev->lc_conf.check_owner = 1;
+	dev->lc_conf.out_data_burst_en = 1;
+	dev->lc_conf.outdscr_burst_en = 1;
 }
 
 
@@ -716,23 +724,265 @@ static void i2s_set_lcd_mode(i2s_dev_t *dev) {
 	dev->conf2.lcd_tx_sdx2_en = 0;
 }
 
-intr_handle_t int_handle;
+
+static void i2s_set_speed(i2s_dev_t *dev) {
+	dev->sample_rate_conf.val = 0;
+	dev->sample_rate_conf.rx_bits_mod = 8;
+	dev->sample_rate_conf.tx_bits_mod = 8;
+	dev->sample_rate_conf.rx_bck_div_num = 2;
+	dev->sample_rate_conf.tx_bck_div_num = 2;
+
+	dev->clkm_conf.val = 0;
+	dev->clkm_conf.clka_en = 0;
+	dev->clkm_conf.clkm_div_a = 63;
+	dev->clkm_conf.clkm_div_b = 63;
+	dev->clkm_conf.clkm_div_num = 8;
+	dev->clkm_conf.clk_en = 1;
+
+	dev->timing.val = 0;
+}
+
+
+static void i2s_configure_tx(i2s_dev_t *dev) {
+	dev->fifo_conf.val = 0;
+	dev->fifo_conf.rx_fifo_mod_force_en = 1;
+	dev->fifo_conf.tx_fifo_mod_force_en = 1;
+	dev->fifo_conf.rx_fifo_mod = 1;
+	dev->fifo_conf.tx_fifo_mod = 1;
+	dev->fifo_conf.dscr_en = 1;
+
+	dev->conf1.val = 0;
+	dev->conf1.tx_stop_en = 1;
+	dev->conf1.tx_pcm_bypass = 1;
+
+	dev->conf_chan.val = 0;
+	dev->conf_chan.tx_chan_mod = 2;
+	dev->conf_chan.rx_chan_mod = 2;
+}
+
+
+struct i2s_transaction_t;
+typedef void(*transaction_cb_t)(struct i2s_transaction_t *trans);
+
+typedef struct {
+	int queue_size;
+	transaction_cb_t pre_cb;
+} i2s_driver_config_t;
+
+typedef struct {
+	QueueHandle_t tx_queue;
+	SemaphoreHandle_t tx_semaphore;
+	transaction_cb_t pre_cb;
+	intr_handle_t intr_handle;
+	lldesc_t *dma;
+	i2s_dev_t *hw;
+} i2s_driver_t;
+
+typedef struct {
+	void *data;
+	size_t length;
+	void *user_data;
+} i2s_transaction_t;
+
+static i2s_driver_t i2s_drivers[2] = {
+	{
+		.tx_queue = 0,
+		.tx_semaphore = 0,
+		.pre_cb = NULL,
+		.intr_handle = NULL,
+		.dma = NULL,
+		.hw = &I2S0
+	},
+	{
+		.tx_queue = 0,
+		.tx_semaphore = 0,
+		.pre_cb = NULL,
+		.intr_handle = NULL,
+		.dma = NULL,
+		.hw = &I2S1
+	}
+};
+
+
 uint8_t *buf = NULL;
-lldesc_t *dma_descriptor = NULL;
-int line = 0;
 
 static void IRAM_ATTR i2s_isr(void *const params) {
-	I2S1.int_clr.val = I2S1.int_st.val;
+	const i2s_driver_t *drv = (i2s_driver_t *)(params);
+	i2s_dev_t *dev = drv->hw;
 
+
+		/*
+	if (dev->int_st.out_total_eof) {
+		ESP_EARLY_LOGE(TAG, "interrupt status: 0x%08x", dev->int_st.val);
+		dev->int_clr.val = dev->int_st.val;
+		while (!dev->state.tx_idle);
+
+		dma_descriptor->size = 320*3;
+		dma_descriptor->length = 320*3;
+		dma_descriptor->buf = buf;
+		dma_descriptor->owner = 1;
+		dma_descriptor->sosf = 0;
+		dma_descriptor->eof = 1;
+		dma_descriptor->empty = 0;
+		dma_descriptor->qe.stqe_next = NULL;
+
+		dev->lc_conf.in_rst = 1;
+		dev->lc_conf.out_rst = 1;
+		dev->lc_conf.ahbm_rst = 1;
+		dev->lc_conf.ahbm_fifo_rst = 1;
+		dev->lc_conf.in_rst = 0;
+		dev->lc_conf.out_rst = 0;
+		dev->lc_conf.ahbm_rst = 0;
+		dev->lc_conf.ahbm_fifo_rst = 0;
+
+		dev->conf.tx_reset = 1;
+		dev->conf.tx_reset = 0;
+
+		dev->lc_conf.check_owner = 1;
+		dev->lc_conf.out_data_burst_en = 1;
+		dev->lc_conf.outdscr_burst_en = 1;
+
+		dev->out_link.addr = (uint32_t)dma_descriptor;
+
+		dev->fifo_conf.dscr_en = 1;
+		dev->out_link.start = 1;
+		dev->conf.tx_start = 1;
+	}
+	uint32_t status = dev->int_st.val;
+	if (status == 0) {
+		return;
+	}
+
+
+	dev->int_clr.val = dev->int_st.val;
+
+	if (status == BIT(16)) {
+		I2S1.out_link.start = 1;
+		I2S1.conf.tx_start = 1;
+	}
+	else {
+		ESP_EARLY_LOGE(TAG, "interrupt status: 0x%08x", status);
+	}
+	I2S1.int_clr.val = I2S1.int_st.val;
+	esp_intr_disable(i2s_drivers[1].intr_handle);
+
+	I2S1.conf.tx_start = 0;
+
+
+	esp_intr_enable(i2s_drivers[1].intr_handle);
+
+	dma_descriptor->size = 320*3;
+	dma_descriptor->length = 320*3;
+	dma_descriptor->buf = buf;
+	dma_descriptor->owner = 1;
+	dma_descriptor->sosf = 0;
+	dma_descriptor->eof = 1;
+	dma_descriptor->qe.stqe_next = NULL;
+	I2S1.out_link.addr = (uint32_t)dma_descriptor;
+
+	*/
+	//I2S1.out_link.start = 1;
+	//I2S1.conf.tx_start = 1;
+}
+
+static esp_err_t i2s_init(i2s_dev_t *dev, i2s_driver_config_t *config) {
+	int dev_num = (dev == &I2S0) ? 0 : 1;
+	i2s_driver_t *drv = &(i2s_drivers[dev_num]);
+	drv->pre_cb = config->pre_cb;
+
+	drv->tx_queue = NULL;
+	drv->tx_semaphore = NULL;
+	drv->dma = NULL;
+
+	drv->tx_queue = xQueueCreate(config->queue_size, sizeof(i2s_transaction_t));
+	if (drv->tx_queue == NULL) {
+		ESP_LOGE(TAG, "I2S queue not allocated");
+		goto cleanup;
+	}
+	drv->tx_semaphore = xSemaphoreCreateBinary();
+	if (drv->tx_semaphore == NULL) {
+		ESP_LOGE(TAG, "I2S semaphore not allocated");
+		goto cleanup;
+	}
+
+	drv->dma = (lldesc_t *)heap_caps_malloc(sizeof(lldesc_t), MALLOC_CAP_DMA);
+	if (drv->dma == NULL) {
+		ESP_LOGE(TAG, "I2S dma not allocated");
+		goto cleanup;
+	}
+
+	return ESP_OK;
+
+cleanup:
+	if (drv->dma != NULL) {
+		heap_caps_free(drv->dma);
+		drv->dma = NULL;
+	}
+	if (drv->tx_semaphore != NULL) {
+		vSemaphoreDelete(drv->tx_semaphore);
+		drv->tx_semaphore = NULL;
+	}
+	if (drv->tx_queue != NULL) {
+		vSemaphoreDelete(drv->tx_queue);
+		drv->tx_queue = NULL;
+	}
+	return ESP_FAIL;
+}
+
+
+static esp_err_t i2s_intr_init(i2s_dev_t *dev) {
+	int dev_num = (dev == &I2S0) ? 0 : 1;
+	i2s_driver_t *drv = &(i2s_drivers[dev_num]);
+	const esp_err_t ret = esp_intr_alloc(
+		dev_num == 0 ? ETS_I2S0_INTR_SOURCE : ETS_I2S1_INTR_SOURCE,
+		0,
+		i2s_isr,
+		drv,
+		&drv->intr_handle
+	);
+	if (ret == ESP_OK) {
+		//esp_intr_set_in_iram(drv->intr_handle, true);
+		esp_intr_enable(drv->intr_handle);
+	}
+	else {
+		ESP_LOGE(TAG, "Interrupt handler not allocated");
+		return ESP_FAIL;
+	}
+
+	dev->int_ena.out_total_eof = 1;
+	dev->int_ena.out_dscr_err = 1;
+	dev->int_ena.out_done = 1;
+	//dev->int_ena.in_err_eof = 1;
+	//dev->int_ena.out_eof = 1;
+	//dev->int_ena.out_dscr_err = 1;
+	//dev->int_ena.out_eof = 1;
+	return ESP_OK;
+}
+
+static void i2s_trans_enqueue(i2s_dev_t *dev, i2s_transaction_t *transaction) {
+	int dev_num = (dev == &I2S0) ? 0 : 1;
+	i2s_driver_t *drv = &(i2s_drivers[dev_num]);
+	xQueueSend(drv->tx_queue, transaction, portMAX_DELAY);
+}
+
+int line = 0;
+
+	/*
 	line++;
 	if (line < 10) {
 		i2s_dev_t *dev = &I2S1;
 		dev->out_link.start = 1;
 		dev->conf.tx_start = 1;
 	}
-}
+	*/
 
 static void draw_dma_pattern(ili9481_driver_t *driver) {
+	i2s_driver_config_t config = {
+		.queue_size = 2,
+		.pre_cb = NULL
+	};
+	i2s_init(&I2S1, &config);
+
 	const int sig_data_base = I2S1O_DATA_OUT0_IDX;
 	const int sig_wr = I2S1O_WS_OUT_IDX;
 	i2s_dev_t *dev = &I2S1;
@@ -750,38 +1000,8 @@ static void draw_dma_pattern(ili9481_driver_t *driver) {
 
 	i2s_reset_fifo(dev);
 	i2s_set_lcd_mode(dev);
-
-	dev->sample_rate_conf.val = 0;
-	dev->sample_rate_conf.rx_bits_mod = 8;
-	dev->sample_rate_conf.tx_bits_mod = 8;
-	dev->sample_rate_conf.rx_bck_div_num = 2;
-	dev->sample_rate_conf.tx_bck_div_num = 2;
-
-	dev->clkm_conf.val = 0;
-	dev->clkm_conf.clka_en = 0;
-	dev->clkm_conf.clkm_div_a = 63;
-	dev->clkm_conf.clkm_div_b = 63;
-	dev->clkm_conf.clkm_div_num = 8;
-	dev->clkm_conf.clk_en = 1;
-
-	dev->timing.val = 0;
-
-	dev->fifo_conf.val = 0;
-	dev->fifo_conf.rx_fifo_mod_force_en = 1;
-	dev->fifo_conf.tx_fifo_mod_force_en = 1;
-	dev->fifo_conf.tx_fifo_mod = 1;
-	dev->fifo_conf.tx_fifo_mod = 1;
-	dev->fifo_conf.rx_data_num = 32;
-	dev->fifo_conf.tx_data_num = 32;
-	dev->fifo_conf.dscr_en = 1;
-
-	dev->conf1.val = 0;
-	dev->conf1.tx_stop_en = 1;
-	dev->conf1.tx_pcm_bypass = 1;
-
-	dev->conf_chan.val = 0;
-	dev->conf_chan.tx_chan_mod = 2;
-	dev->conf_chan.rx_chan_mod = 2;
+	i2s_set_speed(dev);
+	i2s_configure_tx(dev);
 
 	buf = (uint8_t *)heap_caps_malloc(320*3, MALLOC_CAP_DMA);
 	for (size_t i = 0; i < 320; ++i) {
@@ -798,6 +1018,7 @@ static void draw_dma_pattern(ili9481_driver_t *driver) {
 		rotate_buf[i] = (rotate_buf[i] >> 16) | (rotate_buf[i] << 16);
 	}
 
+	/*
 	dma_descriptor = (lldesc_t *)heap_caps_malloc(sizeof(lldesc_t), MALLOC_CAP_DMA);
 	dma_descriptor->size = 320*3;
 	dma_descriptor->length = 320*3;
@@ -805,43 +1026,47 @@ static void draw_dma_pattern(ili9481_driver_t *driver) {
 	dma_descriptor->owner = 1;
 	dma_descriptor->sosf = 0;
 	dma_descriptor->eof = 1;
+	dma_descriptor->empty = 0;
 	dma_descriptor->qe.stqe_next = NULL;
+	*/
 
-	i2s_reset_dma(dev);
+	i2s_intr_init(&I2S1);
+	i2s_configure_dma(dev);
 
-	dev->lc_conf.val = I2S_OUT_DATA_BURST_EN | I2S_OUTDSCR_BURST_EN | I2S_OUT_DATA_BURST_EN;
-	dev->out_link.addr = (uint32_t)dma_descriptor;
+	//dev->out_link.addr = (uint32_t)dma_descriptor;
 
 	gpio_matrix_out(driver->pin_wr, sig_wr, true, false);
 
-	dev->int_ena.out_eof = 1;
-	dev->int_ena.out_total_eof = 1;
+	i2s_transaction_t trans = {
+		.data = buf,
+		.length = 320*3,
+		.user_data = NULL
+	};
+	while (1) {
+		printf("queue\n");
+		i2s_trans_enqueue(&I2S1, &trans);
+	}
 
-	const esp_err_t ret = esp_intr_alloc(
-		ETS_I2S1_INTR_SOURCE,
-		ESP_INTR_FLAG_IRAM,
-		i2s_isr,
-		NULL,
-		&int_handle
-	);
-	esp_intr_set_in_iram(int_handle, true);
-	esp_intr_enable(int_handle);
+	//esp_intr_enable(i2s_drivers[1].intr_handle);
 
+	/*
 	dev->out_link.start = 1;
 	dev->conf.tx_start = 1;
 
-	vTaskDelay(4);
-	dma_descriptor->eof = 0;
-	dma_descriptor->qe.stqe_next = NULL;
-	/*
-	while(1) {
+	while (1) {
+		vTaskDelay(1);
 		for (size_t i = 0; i < 320*3/4; ++i) {
 			rotate_buf[i] = (rotate_buf[i] >> 16) | (rotate_buf[i] << 16);
 		}
-		vTaskDelay(1);
+	}
+	dma_descriptor->eof = 0;
+	dma_descriptor->qe.stqe_next = NULL;
+	*/
+	/*
+	while(1) {
 	}
 	*/
-	vTaskDelay(10);
+	//vTaskDelay(10);
 
 	printf("done\n");
 	vTaskDelay(portMAX_DELAY);
