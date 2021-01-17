@@ -727,15 +727,15 @@ static void i2s_set_lcd_mode(i2s_dev_t *dev) {
 
 static void i2s_set_speed(i2s_dev_t *dev) {
 	dev->sample_rate_conf.val = 0;
-	dev->sample_rate_conf.rx_bits_mod = 8;
-	dev->sample_rate_conf.tx_bits_mod = 8;
+	dev->sample_rate_conf.rx_bits_mod = 4;
+	dev->sample_rate_conf.tx_bits_mod = 4;
 	dev->sample_rate_conf.rx_bck_div_num = 2;
 	dev->sample_rate_conf.tx_bck_div_num = 2;
 
 	dev->clkm_conf.val = 0;
 	dev->clkm_conf.clka_en = 0;
 	dev->clkm_conf.clkm_div_a = 63;
-	dev->clkm_conf.clkm_div_b = 63;
+	dev->clkm_conf.clkm_div_b = 0;
 	dev->clkm_conf.clkm_div_num = 8;
 	dev->clkm_conf.clk_en = 1;
 
@@ -1064,9 +1064,24 @@ static void draw_dma_pattern(ili9481_driver_t *driver) {
 		buf[i*3+1] = (i < 107) ? 0 : (i < 214 ? (((i-107) * 256 / 107)) : 0);
 		buf[i*3+2] = (i < 214) ? 0 : ((i-106) * 256 / 106);
 	}
-	buf[0] = 255;
-	buf[1] = 255;
-	buf[2] = 255;
+	/*
+	int pos = 0;
+	buf[pos+0] = 255;
+	buf[pos+1] = 255;
+	buf[pos+2] = 255;
+	pos = 107*3;
+	buf[pos+0] = 255;
+	buf[pos+1] = 255;
+	buf[pos+2] = 255;
+	pos = 214*3;
+	buf[pos+0] = 255;
+	buf[pos+1] = 255;
+	buf[pos+2] = 255;
+	pos = 319*3;
+	buf[pos+0] = 255;
+	buf[pos+1] = 255;
+	buf[pos+2] = 255;
+	*/
 
 	uint32_t *rotate_buf = (uint32_t *)buf;
 	for (size_t i = 0; i < 320*3/4; ++i) {
@@ -1128,7 +1143,7 @@ static void draw_dma_pattern(ili9481_driver_t *driver) {
 	*/
 	//vTaskDelay(10);
 	while (1) {
-		vTaskDelay(1);
+		vTaskDelay(50);
 		for (size_t i = 0; i < 320*3/4; ++i) {
 			rotate_buf[i] = (rotate_buf[i] >> 16) | (rotate_buf[i] << 16);
 		}
